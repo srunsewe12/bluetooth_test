@@ -1,5 +1,5 @@
 /* eslint-disable no-bitwise */
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { PermissionsAndroid, Platform } from "react-native";
 import {
   BleError,
@@ -23,6 +23,7 @@ interface BluetoothLowEnergyApi {
   connectedDevice: Device | null;
   allDevices: Device[];
   heartRate: number;
+  bluetoothState: string;
 }
 
 function useBLE(): BluetoothLowEnergyApi {
@@ -30,6 +31,41 @@ function useBLE(): BluetoothLowEnergyApi {
   const [allDevices, setAllDevices] = useState<Device[]>([]);
   const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
   const [heartRate, setHeartRate] = useState<number>(0);
+  const [isManagerInitialized, setIsManagerInitialized] = useState(false);
+  const [bluetoothState, setBluetoothState] = useState('Unknown');
+
+  useEffect(() => {
+    const initializeBLE = async () => {
+      try {
+        const state = await bleManager.state();
+        console.log('Initial BLE state:', state);
+        setBluetoothState(state);
+        
+        if (state === 'PoweredOn') {
+          setIsManagerInitialized(true);
+        }
+      } catch (error) {
+        console.error('Failed to initialize BLE:', error);
+      }
+    };
+
+    const subscription = bleManager.onStateChange((state) => {
+      console.log('BLE state changed:', state);
+      setBluetoothState(state);
+      if (state === 'PoweredOn') {
+        setIsManagerInitialized(true);
+      } else {
+        setIsManagerInitialized(false);
+      }
+    }, true);
+
+    initializeBLE();
+
+    return () => {
+      subscription.remove();
+      bleManager.destroy();
+    };
+  }, []);
 
   const requestAndroid31Permissions = async () => {
     const bluetoothScanPermission = await PermissionsAndroid.request(
@@ -90,28 +126,64 @@ function useBLE(): BluetoothLowEnergyApi {
   const isDuplicteDevice = (devices: Device[], nextDevice: Device) =>
     devices.findIndex((device) => nextDevice.id === device.id) > -1;
 
-  const scanForPeripherals = () =>
-    bleManager.startDeviceScan(null, null, (error, device) => {
-      if (error) {
-        console.error(error, "error");
+  const scanForPeripherals = async () => {
+    try {
+      if (!isManagerInitialized) {
+        console.log('BLE Manager not initialized');
+        return;
       }
-      if (device) {
-        
-        setAllDevices((prevState: Device[]) => {
-        
-          if (
-            !isDuplicteDevice(prevState, device)
-            && device.isConnectable
-          ) {
-            return [...prevState, device];
-          }
-          return prevState;
-        });
+
+      if (bluetoothState !== 'PoweredOn') {
+        console.log('Bluetooth is not powered on');
+        return;
       }
-    });
+
+      const permissionsGranted = await requestPermissions();
+      if (!permissionsGranted) {
+        console.log('Required permissions not granted');
+        return;
+      }
+
+      console.log("Starting device scan...");
+      bleManager.startDeviceScan(null, null, (error, device) => {
+        if (error) {
+          console.error("Scan error:", error);
+          return;
+        }
+
+        if (device) {
+          console.log("Found device:", {
+            name: device.name,
+            id: device.id,
+            rssi: device.rssi
+          });
+
+          setAllDevices((prevState: Device[]) => {
+            if (!isDuplicteDevice(prevState, device)) {
+              return [...prevState, device];
+            }
+            return prevState;
+          });
+        }
+      });
+
+      setTimeout(() => {
+        bleManager.stopDeviceScan();
+        console.log("Stopped device scan");
+      }, 50000);
+
+    } catch (error) {
+      console.error("Scan failed:", error);
+    }
+  };
 
   const connectToDevice = async (device: Device) => {
     try {
+      if (!isManagerInitialized) {
+        console.log('BLE Manager not initialized');
+        return;
+      }
+
       console.log("Attempting to connect to device:", device.name, device.id);
       const deviceConnection = await bleManager.connectToDevice(device.id);
       console.log("Connected to device:", deviceConnection.name);
@@ -124,12 +196,12 @@ function useBLE(): BluetoothLowEnergyApi {
       startStreamingData(deviceConnection);
     } catch (e) {
       console.error("Failed to connect:", e);
-
-      // Retry logic
-    //   setTimeout(() => {
-    //     console.log("Retrying connection to device:", device.name);
-    //     connectToDevice(device);
-    //   }, 5000); // Retry after 5 seconds
+      
+      // Optional: Implement retry logic
+      // setTimeout(() => {
+      //   console.log("Retrying connection to device:", device.name);
+      //   connectToDevice(device);
+      // }, 5000);
     }
   };
 
@@ -189,6 +261,7 @@ function useBLE(): BluetoothLowEnergyApi {
     connectedDevice,
     disconnectFromDevice,
     heartRate,
+    bluetoothState,
   };
 }
 
